@@ -17,10 +17,14 @@ const EXCEL_DIR = path.join(__dirname, 'excel_files');
 // Global processing state
 let processingState = {
     isProcessing: false,
+    currentKeywords: [],
+    processedKeywords: [],
+    currentKeywordIndex: 0,
     currentQuery: '',
     currentCount: 0,
     startTime: null,
-    processId: null
+    processId: null,
+    completedFiles: []
 };
 
 // Ensure excel directory exists
@@ -31,7 +35,7 @@ if (!fs.existsSync(EXCEL_DIR)) {
 // 🟢 Enhanced contact extraction with internal pages
 async function extractContactInfoFromWebsite(url, visitInternalPages = true) {
     const browser = await puppeteer.launch({
-        headless: true,
+        headless: "new",
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
 
@@ -48,17 +52,17 @@ async function extractContactInfoFromWebsite(url, visitInternalPages = true) {
 
         // Extract from homepage
         let contactInfo = await extractFromPage(page, url);
-        
+
         // If no contacts found and visitInternalPages is true, try internal pages
         if (visitInternalPages && (contactInfo.emails.length === 0 || contactInfo.facebook.length === 0 || contactInfo.instagram.length === 0)) {
             console.log('🔍 Searching internal pages for more contact info...');
-            
+
             const internalPages = await findInternalPages(page, url);
             for (const internalUrl of internalPages.slice(0, 3)) { // Limit to 3 internal pages
                 try {
                     console.log(`🌐 Checking internal page: ${internalUrl}`);
                     const internalInfo = await extractFromPage(page, internalUrl);
-                    
+
                     // Merge results
                     contactInfo.emails = [...new Set([...contactInfo.emails, ...internalInfo.emails])];
                     contactInfo.facebook = [...new Set([...contactInfo.facebook, ...internalInfo.facebook])];
@@ -82,24 +86,24 @@ async function extractContactInfoFromWebsite(url, visitInternalPages = true) {
 async function findInternalPages(page, baseUrl) {
     try {
         await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        
+
         const internalPages = await page.evaluate((base) => {
             const links = Array.from(document.querySelectorAll('a[href]'));
             const baseHost = new URL(base).hostname;
             const keywords = ['contact', 'about', 'team', 'staff', 'reach', 'get-in-touch'];
-            
+
             return links
                 .map(link => link.href)
                 .filter(href => {
                     try {
                         const url = new URL(href);
-                        return url.hostname === baseHost && 
+                        return url.hostname === baseHost &&
                                keywords.some(keyword => href.toLowerCase().includes(keyword));
                     } catch { return false; }
                 })
                 .slice(0, 5); // Limit results
         }, baseUrl);
-        
+
         return [...new Set(internalPages)];
     } catch (err) {
         console.log(`⚠️ Error finding internal pages: ${err.message}`);
@@ -112,15 +116,15 @@ async function extractFromPage(page, url) {
     try {
         console.log(`🔍 Extracting contacts from: ${url}`);
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        
+
         // Wait for dynamic content to load
         await new Promise(resolve => setTimeout(resolve, 5000));
-        
+
         // Try to scroll to trigger lazy loading
         await page.evaluate(() => {
             window.scrollTo(0, document.body.scrollHeight);
         });
-        
+
         // Wait a bit more after scrolling
         await new Promise(resolve => setTimeout(resolve, 3000));
 
@@ -132,11 +136,13 @@ async function extractFromPage(page, url) {
             (html.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi) || [])
                 .filter(email => {
                     const lower = email.toLowerCase();
-                    return !lower.endsWith('.png') && 
-                           !lower.endsWith('.jpg') && 
+                    return !lower.endsWith('.png') &&
+                           !lower.endsWith('.jpg') &&
                            !lower.endsWith('.jpeg') &&
                            !lower.includes('example') &&
                            !lower.includes('test@') &&
+                           !lower.includes('noreply') &&
+                           !lower.includes('no-reply') &&
                            lower.includes('.');
                 })
         )];
@@ -144,29 +150,51 @@ async function extractFromPage(page, url) {
         // Also look for obfuscated emails like "contact[at]domain[dot]com"
         const obfuscatedEmails = (html.match(/[a-zA-Z0-9._%+-]+\s*\[\s*at\s*\]\s*[a-zA-Z0-9.-]+\s*\[\s*dot\s*\]\s*[a-zA-Z]{2,}/gi) || [])
             .map(email => email.replace(/\s*\[\s*at\s*\]\s*/gi, '@').replace(/\s*\[\s*dot\s*\]\s*/gi, '.'));
-        
+
         emails = [...new Set([...emails, ...obfuscatedEmails])];
 
         console.log(`📧 Found ${emails.length} emails: ${emails.join(', ')}`);
 
-        // 🌐 Extract Facebook links with better patterns
+        // 🌐 Extract Facebook links with better patterns and filtering
         let facebook = [...new Set(
             (html.match(/(?:https?:\/\/)?(?:www\.)?facebook\.com\/[a-zA-Z0-9._%+-]+/gi) || [])
                 .map(link => link.startsWith('http') ? link : 'https://' + link)
-                .filter(link => !link.includes('/login') && !link.includes('/share'))
+                .filter(link =>
+                    !link.includes('/login') &&
+                    !link.includes('/share') &&
+                    !link.includes('/tr') &&
+                    !link.includes('/people') &&
+                    !link.includes('/plugins') &&
+                    !link.includes('/sharer') &&
+                    !link.includes('/dialog') &&
+                    !link.includes('/connect') &&
+                    !link.includes('/privacy') &&
+                    !link.includes('/help') &&
+                    link.length > 25 // Filter out very short/generic links
+                )
         )];
 
         console.log(`📘 Found ${facebook.length} Facebook links: ${facebook.join(', ')}`);
 
-        // 📸 Extract Instagram links with better patterns
+        // 📸 Extract Instagram links with better patterns and filtering
         let instagramLinks = [...new Set(
             (html.match(/(?:https?:\/\/)?(?:www\.)?instagram\.com\/[a-zA-Z0-9._]+/gi) || [])
                 .map(link => link.startsWith('http') ? link : 'https://' + link)
+                .filter(link =>
+                    !link.includes('/p/') &&
+                    !link.includes('/reel/') &&
+                    !link.includes('/tv/') &&
+                    !link.includes('/stories/') &&
+                    !link.includes('/explore/') &&
+                    !link.includes('/accounts/') &&
+                    !link.includes('/direct/') &&
+                    link.length > 25 // Filter out short/generic links
+                )
         )];
 
-        const profiles = instagramLinks.filter(link => 
-            !link.includes('/p/') && 
-            !link.includes('/reel/') && 
+        const profiles = instagramLinks.filter(link =>
+            !link.includes('/p/') &&
+            !link.includes('/reel/') &&
             !link.includes('/tv/') &&
             !link.includes('/stories/')
         );
@@ -188,7 +216,7 @@ async function extractFromPage(page, url) {
 // 🟢 Scrape Google Maps businesses with enhanced contact extraction
 async function scrapeGoogleMaps(searchQuery, targetCount, visitInternalPages = true) {
     const browser = await puppeteer.launch({
-        headless: true,
+        headless: "new",
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
 
@@ -258,7 +286,7 @@ async function scrapeGoogleMaps(searchQuery, targetCount, visitInternalPages = t
         for (let i = 0; i < Math.min(businesses.length, targetCount); i++) {
             const business = businesses[i];
             console.log(`🔍 Processing ${i + 1}/${targetCount}: ${business.name}`);
-            
+
             try {
                 const mapPage = await browser.newPage();
                 await mapPage.setRequestInterception(true);
@@ -392,79 +420,135 @@ app.get('/', (req, res) => {
 app.get('/api/status', (req, res) => {
     res.json({
         isProcessing: processingState.isProcessing,
+        currentKeywords: processingState.currentKeywords,
+        processedKeywords: processingState.processedKeywords,
+        currentKeywordIndex: processingState.currentKeywordIndex,
         currentQuery: processingState.currentQuery,
         currentCount: processingState.currentCount,
         startTime: processingState.startTime,
         processId: processingState.processId,
-        elapsed: processingState.startTime ? Date.now() - processingState.startTime : 0
+        completedFiles: processingState.completedFiles,
+        elapsed: processingState.startTime ? Date.now() - processingState.startTime : 0,
+        progress: processingState.currentKeywords.length > 0 ?
+            ((processingState.processedKeywords.length / processingState.currentKeywords.length) * 100).toFixed(1) : 0
     });
 });
 
-// Scrape and generate Excel
+// Scrape and generate Excel for multiple keywords
 app.post('/api/scrape', async (req, res) => {
-    const { query, count, visitInternalPages = true } = req.body;
+    const { keywords, count, visitInternalPages = true } = req.body;
 
-    if (!query || !count) {
-        return res.status(400).json({ error: 'Missing query or count parameter' });
+    if (!keywords || !Array.isArray(keywords) || keywords.length === 0 || !count) {
+        return res.status(400).json({ error: 'Missing keywords array or count parameter' });
     }
 
     // Check if already processing
     if (processingState.isProcessing) {
-        return res.status(429).json({ 
+        return res.status(429).json({
             error: 'Another scraping process is already running',
             currentProcess: {
-                query: processingState.currentQuery,
-                count: processingState.currentCount,
-                elapsed: Date.now() - processingState.startTime
+                keywords: processingState.currentKeywords,
+                processedKeywords: processingState.processedKeywords,
+                currentQuery: processingState.currentQuery,
+                elapsed: Date.now() - processingState.startTime,
+                progress: processingState.currentKeywords.length > 0 ?
+                    ((processingState.processedKeywords.length / processingState.currentKeywords.length) * 100).toFixed(1) : 0
             }
         });
     }
 
-    // Set processing state
+    // Set processing state for multiple keywords
     processingState.isProcessing = true;
-    processingState.currentQuery = query;
+    processingState.currentKeywords = [...keywords];
+    processingState.processedKeywords = [];
+    processingState.currentKeywordIndex = 0;
+    processingState.currentQuery = keywords[0];
     processingState.currentCount = parseInt(count);
     processingState.startTime = Date.now();
     processingState.processId = `proc_${Date.now()}`;
+    processingState.completedFiles = [];
 
     try {
-        console.log(`🚀 Starting scrape: ${query} (${count} results) - Process ID: ${processingState.processId}`);
-        
-        // Start scraping in background but return immediately with process ID
-        const scrapePromise = scrapeGoogleMaps(query, parseInt(count), visitInternalPages);
-        
+        console.log(`🚀 Starting multi-keyword scrape: ${keywords.join(', ')} (${count} results each) - Process ID: ${processingState.processId}`);
+
+        // Return immediately with process info
         res.json({
             success: true,
-            message: 'Scraping process started',
+            message: 'Multi-keyword scraping process started',
             processId: processingState.processId,
-            query: processingState.currentQuery,
+            keywords: processingState.currentKeywords,
             count: processingState.currentCount
         });
 
-        // Continue processing in background
-        const results = await scrapePromise;
-        
-        // Generate filename
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-        const filename = `leads_${query.replace(/[^a-zA-Z0-9]/g, '_')}_${timestamp}_${Date.now()}.xlsx`;
-        
-        // Create Excel file
-        await createExcelFile(results, filename);
-        
-        console.log(`✅ Scraping completed: ${results.length} results saved to ${filename}`);
-        
+        // Process each keyword sequentially
+        for (let i = 0; i < keywords.length; i++) {
+            const keyword = keywords[i];
+
+            // Update current processing state
+            processingState.currentKeywordIndex = i;
+            processingState.currentQuery = keyword;
+
+            console.log(`🎯 Processing keyword ${i + 1}/${keywords.length}: "${keyword}"`);
+
+            try {
+                // Scrape current keyword
+                const results = await scrapeGoogleMaps(keyword, parseInt(count), visitInternalPages);
+
+                // Generate filename for this keyword
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
+                const filename = `leads_${keyword.replace(/[^a-zA-Z0-9]/g, '_')}_${timestamp}_${Date.now()}.xlsx`;
+
+                // Create Excel file
+                await createExcelFile(results, filename);
+
+                // Add to completed files
+                processingState.completedFiles.push({
+                    keyword: keyword,
+                    filename: filename,
+                    resultCount: results.length,
+                    timestamp: new Date().toISOString()
+                });
+
+                // Mark keyword as processed
+                processingState.processedKeywords.push(keyword);
+
+                console.log(`✅ Completed keyword "${keyword}": ${results.length} results saved to ${filename}`);
+
+            } catch (err) {
+                console.error(`❌ Error processing keyword "${keyword}": ${err.message}`);
+
+                // Mark as processed even if failed, to continue with next
+                processingState.processedKeywords.push(keyword);
+                processingState.completedFiles.push({
+                    keyword: keyword,
+                    filename: null,
+                    resultCount: 0,
+                    error: err.message,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        }
+
+        console.log(`🎉 All keywords completed! Processed: ${processingState.processedKeywords.join(', ')}`);
+
         // Clear processing state
         processingState.isProcessing = false;
+        processingState.currentKeywords = [];
+        processingState.processedKeywords = [];
+        processingState.currentKeywordIndex = 0;
         processingState.currentQuery = '';
         processingState.currentCount = 0;
         processingState.startTime = null;
         processingState.processId = null;
 
     } catch (err) {
-        console.error(`❌ Scraping Error: ${err.message}`);
-        
+        console.error(`❌ Multi-keyword Scraping Error: ${err.message}`);
+
         // Clear processing state on error
         processingState.isProcessing = false;
+        processingState.currentKeywords = [];
+        processingState.processedKeywords = [];
+        processingState.currentKeywordIndex = 0;
         processingState.currentQuery = '';
         processingState.currentCount = 0;
         processingState.startTime = null;
@@ -472,56 +556,34 @@ app.post('/api/scrape', async (req, res) => {
     }
 });
 
-// Get scraping results (check if completed)
+// Get scraping results and live updates
 app.get('/api/results/:processId', (req, res) => {
     const { processId } = req.params;
-    
+
     // If still processing and matches current process
     if (processingState.isProcessing && processingState.processId === processId) {
         return res.json({
             status: 'processing',
-            query: processingState.currentQuery,
+            keywords: processingState.currentKeywords,
+            processedKeywords: processingState.processedKeywords,
+            currentKeywordIndex: processingState.currentKeywordIndex,
+            currentQuery: processingState.currentQuery,
             count: processingState.currentCount,
-            elapsed: Date.now() - processingState.startTime
+            elapsed: Date.now() - processingState.startTime,
+            completedFiles: processingState.completedFiles,
+            progress: processingState.currentKeywords.length > 0 ?
+                ((processingState.processedKeywords.length / processingState.currentKeywords.length) * 100).toFixed(1) : 0
         });
     }
 
-    // If not processing, check for recent files
-    try {
-        const files = fs.readdirSync(EXCEL_DIR)
-            .filter(file => file.endsWith('.xlsx'))
-            .map(file => {
-                const filepath = path.join(EXCEL_DIR, file);
-                const stats = fs.statSync(filepath);
-                return {
-                    name: file,
-                    created: stats.birthtime.getTime(),
-                    stats
-                };
-            })
-            .sort((a, b) => b.created - a.created);
-
-        // Return most recent file (likely the one just completed)
-        if (files.length > 0) {
-            const recentFile = files[0];
-            return res.json({
-                status: 'completed',
-                filename: recentFile.name,
-                size: (recentFile.stats.size / 1024).toFixed(2) + ' KB',
-                created: new Date(recentFile.created).toISOString()
-            });
-        } else {
-            return res.json({
-                status: 'completed',
-                message: 'No files found'
-            });
-        }
-    } catch (err) {
-        return res.json({
-            status: 'error',
-            error: 'Failed to check results'
-        });
-    }
+    // If not processing, return completion status with all files
+    return res.json({
+        status: 'completed',
+        completedFiles: processingState.completedFiles || [],
+        message: processingState.completedFiles?.length > 0 ?
+            `All keywords completed! Generated ${processingState.completedFiles.length} files.` :
+            'Process completed'
+    });
 });
 
 // Get list of Excel files
@@ -539,7 +601,7 @@ app.get('/api/files', (req, res) => {
                 };
             })
             .sort((a, b) => new Date(b.created) - new Date(a.created));
-        
+
         res.json(files);
     } catch (err) {
         console.error(`❌ Error reading files: ${err.message}`);
@@ -551,11 +613,11 @@ app.get('/api/files', (req, res) => {
 app.get('/api/download/:filename', (req, res) => {
     const filename = req.params.filename;
     const filepath = path.join(EXCEL_DIR, filename);
-    
+
     if (!fs.existsSync(filepath)) {
         return res.status(404).json({ error: 'File not found' });
     }
-    
+
     res.download(filepath, filename);
 });
 
@@ -563,11 +625,11 @@ app.get('/api/download/:filename', (req, res) => {
 app.delete('/api/files/:filename', (req, res) => {
     const filename = req.params.filename;
     const filepath = path.join(EXCEL_DIR, filename);
-    
+
     if (!fs.existsSync(filepath)) {
         return res.status(404).json({ error: 'File not found' });
     }
-    
+
     try {
         fs.unlinkSync(filepath);
         res.json({ success: true, message: 'File deleted successfully' });
