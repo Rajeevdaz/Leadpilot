@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lead Generation System</title>
+    <title>LeadPilot - Lead Generation System</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -67,18 +67,33 @@
             
             <!-- Processing Overlay -->
             <div id="processingOverlay" class="absolute inset-0 processing-overlay rounded-2xl hidden items-center justify-center z-10">
-                <div class="bg-white rounded-lg p-6 shadow-lg text-center max-w-md">
+                <div class="bg-white rounded-lg p-6 shadow-lg text-center max-w-lg">
                     <div class="animate-spin-slow mb-4">
                         <i class="fas fa-cog text-4xl text-blue-500"></i>
                     </div>
-                    <h3 class="text-lg font-bold text-gray-800 mb-2">Scraping in Progress</h3>
-                    <p class="text-gray-600 mb-2">
-                        <span id="currentProcessQuery" class="font-semibold">""</span>
-                    </p>
-                    <p class="text-sm text-gray-500 mb-4">
-                        <span id="currentProcessCount">0</span> results • 
-                        <span id="elapsedTime">0s</span> elapsed
-                    </p>
+                    <h3 class="text-lg font-bold text-gray-800 mb-3">Processing Keywords</h3>
+                    
+                    <!-- Progress Bar -->
+                    <div class="w-full bg-gray-200 rounded-full h-3 mb-4">
+                        <div id="keywordProgressBar" class="bg-gradient-to-r from-green-400 to-blue-500 h-3 rounded-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                    
+                    <!-- Current Processing Info -->
+                    <div class="mb-4">
+                        <p class="text-sm text-gray-600 mb-2">
+                            <span id="progressCounter">0 / 0</span> keywords completed
+                            • <span id="elapsedTime">0s</span> elapsed
+                        </p>
+                        <p class="text-sm font-semibold text-blue-600">
+                            Currently processing: <span id="currentProcessQuery">""</span>
+                        </p>
+                    </div>
+                    
+                    <!-- Keywords Status List -->
+                    <div id="keywordsStatusList" class="text-left max-h-32 overflow-y-auto mb-4">
+                        <!-- Keywords status will be populated here -->
+                    </div>
+                    
                     <button 
                         onclick="checkResults()"
                         class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition duration-200"
@@ -137,8 +152,8 @@
                         <input type="checkbox" id="visitInternalPages" checked class="mr-3 scale-125">
                         <span class="text-gray-700">
                             <i class="fas fa-globe mr-2"></i>
-                           Search internal pages (Contact, About) for more details
-                            </span>
+                            Search internal pages for more details
+                        </span>
                     </label>
                 </div>
             </div>
@@ -274,7 +289,6 @@
 
         function renderKeywords() {
             const keywordsList = document.getElementById('keywordsList');
-            const placeholder = document.getElementById('keywordsPlaceholder');
             
             if (keywords.length === 0) {
                 keywordsList.innerHTML = '<span class="text-gray-500 text-sm" id="keywordsPlaceholder">Add keywords by typing and pressing Enter...</span>';
@@ -320,15 +334,67 @@
             }
         }
 
-        // Show processing overlay
+        // Show processing overlay with multiple keywords
         function showProcessingOverlay(status) {
             document.getElementById('processingOverlay').classList.remove('hidden');
             document.getElementById('processingOverlay').classList.add('flex');
             document.getElementById('startScraping').disabled = true;
             
-            document.getElementById('currentProcessQuery').textContent = `"${status.currentQuery}"`;
-            document.getElementById('currentProcessCount').textContent = status.currentCount;
-            document.getElementById('elapsedTime').textContent = formatElapsedTime(status.elapsed);
+            updateProcessingStatus(status);
+        }
+
+        // Update processing status display
+        function updateProcessingStatus(status) {
+            // Update progress info
+            const totalKeywords = status.keywords ? status.keywords.length : status.currentKeywords?.length || 0;
+            const completedKeywords = status.processedKeywords ? status.processedKeywords.length : 0;
+            const progress = status.progress || 0;
+            
+            document.getElementById('keywordProgressBar').style.width = `${progress}%`;
+            document.getElementById('progressCounter').textContent = `${completedKeywords} / ${totalKeywords}`;
+            document.getElementById('elapsedTime').textContent = formatElapsedTime(status.elapsed || 0);
+            document.getElementById('currentProcessQuery').textContent = `"${status.currentQuery || ''}"`;
+            
+            // Update keywords status list
+            updateKeywordsStatusList(status);
+        }
+
+        // Update keywords status list
+        function updateKeywordsStatusList(status) {
+            const statusList = document.getElementById('keywordsStatusList');
+            const keywords = status.keywords || status.currentKeywords || [];
+            const processedKeywords = status.processedKeywords || [];
+            const currentIndex = status.currentKeywordIndex || 0;
+            
+            if (keywords.length === 0) return;
+            
+            statusList.innerHTML = keywords.map((keyword, index) => {
+                let statusIcon, statusClass, statusText;
+                
+                if (processedKeywords.includes(keyword)) {
+                    statusIcon = '<i class="fas fa-check-circle text-green-500"></i>';
+                    statusClass = 'text-green-600';
+                    statusText = 'Completed';
+                } else if (index === currentIndex) {
+                    statusIcon = '<i class="fas fa-spinner fa-spin text-blue-500"></i>';
+                    statusClass = 'text-blue-600 font-semibold';
+                    statusText = 'Processing...';
+                } else {
+                    statusIcon = '<i class="fas fa-clock text-gray-400"></i>';
+                    statusClass = 'text-gray-500';
+                    statusText = 'Waiting';
+                }
+                
+                return `
+                    <div class="flex items-center justify-between py-1 text-sm">
+                        <span class="${statusClass}">${keyword}</span>
+                        <span class="flex items-center gap-1">
+                            ${statusIcon}
+                            <span class="text-xs ${statusClass}">${statusText}</span>
+                        </span>
+                    </div>
+                `;
+            }).join('');
         }
 
         // Hide processing overlay
@@ -365,14 +431,18 @@
                     const status = await response.json();
                     
                     if (status.isProcessing) {
-                        document.getElementById('currentProcessQuery').textContent = `"${status.currentQuery}"`;
-                        document.getElementById('currentProcessCount').textContent = status.currentCount;
-                        document.getElementById('elapsedTime').textContent = formatElapsedTime(status.elapsed);
+                        updateProcessingStatus(status);
                     } else {
                         // Processing completed
                         clearInterval(statusCheckInterval);
                         hideProcessingOverlay();
-                        showMessage('Scraping completed! Check files section for results.', 'success');
+                        
+                        const completedCount = status.completedFiles?.length || 0;
+                        if (completedCount > 0) {
+                            showMessage(`All keywords completed! Generated ${completedCount} Excel files.`, 'success');
+                        } else {
+                            showMessage('Processing completed!', 'success');
+                        }
                         loadFiles(); // Refresh files list
                     }
                 } catch (error) {
@@ -389,17 +459,26 @@
                 
                 if (!status.isProcessing) {
                     hideProcessingOverlay();
-                    showMessage('Process completed!', 'success');
+                    const completedCount = status.completedFiles?.length || 0;
+                    if (completedCount > 0) {
+                        showMessage(`All processes completed! Generated ${completedCount} files.`, 'success');
+                    } else {
+                        showMessage('Process completed!', 'success');
+                    }
                     loadFiles();
                 } else {
-                    showMessage(`Still processing... ${formatElapsedTime(status.elapsed)} elapsed`, 'info');
+                    const progress = status.progress || 0;
+                    const completed = status.processedKeywords?.length || 0;
+                    const total = status.currentKeywords?.length || 0;
+                    showMessage(`Still processing... ${completed}/${total} keywords completed (${progress}%)`, 'info');
+                    updateProcessingStatus(status);
                 }
             } catch (error) {
                 showMessage('Error checking status', 'error');
             }
         }
 
-        // Start scraping with multiple keywords
+        // Start scraping with multiple keywords (FIXED VERSION)
         document.getElementById('startScraping').addEventListener('click', async () => {
             const count = parseInt(document.getElementById('targetCount').value);
             const visitInternalPages = document.getElementById('visitInternalPages').checked;
@@ -414,73 +493,57 @@
                 return;
             }
 
-            // Process keywords one by one
-            for (let i = 0; i < keywords.length; i++) {
-                const keyword = keywords[i];
+            try {
+                showMessage(`Starting scrape for ${keywords.length} keywords...`, 'info');
                 
-                try {
-                    showMessage(`Starting scrape ${i + 1}/${keywords.length}: ${keyword}`, 'info');
-                    
-                    const response = await fetch('/api/scrape', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            query: keyword,
-                            count,
-                            visitInternalPages
-                        })
+                const response = await fetch('/api/scrape', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        keywords: keywords,  // Send as array
+                        count,
+                        visitInternalPages
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    currentProcessId = result.processId;
+                    showProcessingOverlay({
+                        keywords: result.keywords,
+                        processedKeywords: [],
+                        currentKeywordIndex: 0,
+                        currentQuery: result.keywords[0],
+                        currentCount: count,
+                        elapsed: 0,
+                        progress: 0,
+                        completedFiles: []
                     });
-
-                    const result = await response.json();
-
-                    if (result.success) {
-                        currentProcessId = result.processId;
+                    startStatusChecking();
+                    
+                } else if (response.status === 429) {
+                    // Another process is running
+                    showMessage(result.error, 'warning');
+                    if (result.currentProcess) {
                         showProcessingOverlay({
-                            currentQuery: keyword,
-                            currentCount: count,
-                            elapsed: 0
+                            keywords: result.currentProcess.keywords || [],
+                            processedKeywords: result.currentProcess.processedKeywords || [],
+                            currentQuery: result.currentProcess.currentQuery || '',
+                            elapsed: result.currentProcess.elapsed || 0,
+                            progress: result.currentProcess.progress || 0
                         });
                         startStatusChecking();
-                        
-                        // Wait for this process to complete before starting next
-                        await waitForProcessCompletion(result.processId);
-                        
-                    } else if (response.status === 429) {
-                        // Another process is running
-                        showMessage(result.error, 'warning');
-                        showProcessingOverlay(result.currentProcess);
-                        startStatusChecking();
-                        break;
-                    } else {
-                        throw new Error(result.error || 'Scraping failed');
                     }
-                } catch (error) {
-                    showMessage(`Error processing "${keyword}": ${error.message}`, 'error');
-                    break;
+                } else {
+                    throw new Error(result.error || 'Scraping failed');
                 }
+            } catch (error) {
+                showMessage(`Error starting scrape: ${error.message}`, 'error');
             }
         });
-
-        // Wait for process completion
-        async function waitForProcessCompletion(processId) {
-            return new Promise((resolve) => {
-                const checkCompletion = setInterval(async () => {
-                    try {
-                        const response = await fetch(`/api/results/${processId}`);
-                        const result = await response.json();
-                        
-                        if (result.status === 'completed' || result.status === 'error') {
-                            clearInterval(checkCompletion);
-                            resolve(result);
-                        }
-                    } catch (error) {
-                        console.error('Error checking completion:', error);
-                    }
-                }, 5000); // Check every 5 seconds
-            });
-        }
 
         // Load files
         async function loadFiles() {
