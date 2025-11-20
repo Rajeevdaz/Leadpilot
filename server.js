@@ -31,6 +31,29 @@ let processingState = {
 if (!fs.existsSync(EXCEL_DIR)) {
     fs.mkdirSync(EXCEL_DIR, { recursive: true });
 }
+// AUTO-DETECT GOOGLE MAPS LEFT PANEL
+async function detectLeftPanel(page) {
+    const selectors = [
+        'div[role="feed"]',
+        'div[aria-label][jscontroller][jsaction]',
+        'div.m6QErb.DxyBCb.kA9KIf.dS8AEf',
+        'div.m6QErb.tLjsW.eKbjU',
+        'div.section-scrollbox',
+        'div.scrollable-pane',
+        'div[role="region"]'
+    ];
+
+    for (const selector of selectors) {
+        const element = await page.$(selector);
+        if (element) {
+            console.log(`✅ Left panel detected using: ${selector}`);
+            return element;
+        }
+    }
+
+    console.log("❌ No left panel found with known selectors.");
+    return null;
+}
 
 // 🟢 Enhanced contact extraction with internal pages
 async function extractContactInfoFromWebsite(url, visitInternalPages = true) {
@@ -234,12 +257,12 @@ async function scrapeGoogleMaps(searchQuery, targetCount, visitInternalPages = t
         let lastCount = 0;
         let noNewResultsCount = 0;
 
-        for (let i = 0; i < MAX_SCROLLS; i++) {
-            const panel = await page.$('div[role="feed"]');
-            if (!panel) {
-                console.log('❌ Left panel not found!');
-                break;
-            }
+        for (let i = 0; i < MAX_SCROLLS; i++) {const panel = await detectLeftPanel(page);
+if (!panel) {
+    console.log("❌ Could not detect left panel. Stopping scroll.");
+    break;
+}
+
 
             await page.evaluate(el => el.scrollBy(0, el.scrollHeight), panel);
             console.log(`🔽 Scrolled panel: ${i + 1}`);
