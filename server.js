@@ -31,29 +31,89 @@ let processingState = {
 if (!fs.existsSync(EXCEL_DIR)) {
     fs.mkdirSync(EXCEL_DIR, { recursive: true });
 }
-// AUTO-DETECT GOOGLE MAPS LEFT PANEL
+// GOOGLE MAPS LEFT PANEL DETECTOR (Known Selectors + Structure Detection + Retry)
 async function detectLeftPanel(page) {
-    const selectors = [
+    // 1️⃣ Known selectors (fast path)
+    const knownSelectors = [
         'div[role="feed"]',
-        'div[aria-label][jscontroller][jsaction]',
+        'div[role="region"]',
         'div.m6QErb.DxyBCb.kA9KIf.dS8AEf',
         'div.m6QErb.tLjsW.eKbjU',
         'div.section-scrollbox',
         'div.scrollable-pane',
-        'div[role="region"]'
+        'div[jscontroller][jsaction][aria-label]',
+        'div[aria-label][class*="scroll"]'
     ];
 
-    for (const selector of selectors) {
-        const element = await page.$(selector);
-        if (element) {
-            console.log(`✅ Left panel detected using: ${selector}`);
-            return element;
+    for (const selector of knownSelectors) {
+        const found = await page.$(selector);
+        if (found) {
+            console.log(`✅ Left panel detected (known selector): ${selector}`);
+            return found;
         }
     }
 
-    console.log("❌ No left panel found with known selectors.");
+    console.log("⚠️ Known selectors failed. Switching to structure-based detection...");
+
+    // 2️⃣ Structure-based detection (permanent fallback)
+    const allContainers = await page.$$('div, section');
+
+    for (const el of allContainers) {
+        try {
+            const rect = await el.boundingBox();
+            if (!rect) continue;
+
+            // Must be tall enough but not fullscreen
+            if (rect.height < 250 || rect.height > 1200) continue;
+
+            // Check scrollability
+            const isScrollable = await page.evaluate(element => {
+                const style = window.getComputedStyle(element);
+                return (
+                    style.overflowY === 'scroll' ||
+                    style.overflowY === 'auto' ||
+                    element.scrollHeight > element.clientHeight + 40
+                );
+            }, el);
+
+            if (!isScrollable) continue;
+
+            // Must contain business list items
+            const hasBusinessListings = await page.evaluate(element => {
+                return element.querySelector('a[href*="maps/place"]') ||
+                       element.querySelector('a[href*="/maps/search"]') ||
+                       element.querySelector('a[data-js-log-root]') ||
+                       element.querySelector('a[jsaction]');
+            }, el);
+
+            if (!hasBusinessListings) continue;
+
+            console.log("✅ Left panel detected (structure-based).");
+            return el;
+
+        } catch (err) {
+            continue;
+        }
+    }
+
+    console.log("❌ Left panel NOT detected. Retrying in 3 seconds...");
+
+    // 3️⃣ Retry logic (Google Maps sometimes loads slow)
+    await page.waitForTimeout(3000);
+
+    for (const selector of knownSelectors) {
+        const found = await page.$(selector);
+        if (found) {
+            console.log(`🔁 Retried and detected left panel using: ${selector}`);
+            return found;
+        }
+    }
+
+    console.log("😓 Panel detection failed even after retry.");
     return null;
 }
+
+
 
 // 🟢 Enhanced contact extraction with internal pages
 async function extractContactInfoFromWebsite(url, visitInternalPages = true) {
